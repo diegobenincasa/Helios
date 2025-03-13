@@ -47,7 +47,8 @@ public class JwtUtil {
     public boolean validateToken(String token) {
         try {
             DecodedJWT jwt = verifier.verify(token);
-            return !isTokenExpired(jwt);
+            boolean exp = isTokenExpired(jwt);
+            return !exp;
         } catch (Exception e) {
             return false;
         }

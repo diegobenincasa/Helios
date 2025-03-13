@@ -1,18 +1,15 @@
 package br.lightbase.helios.config.jwt;
 
-import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
-import org.springframework.security.web.authentication.preauth.PreAuthenticatedAuthenticationToken;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.ReactiveSecurityContextHolder;
+import org.springframework.web.server.WebFilter;
+import org.springframework.web.server.WebFilterChain;
 import org.springframework.stereotype.Component;
-import org.springframework.web.filter.OncePerRequestFilter;
-
-import jakarta.servlet.FilterChain;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
-import java.io.IOException;
+import org.springframework.web.server.ServerWebExchange;
+import reactor.core.publisher.Mono;
 
 @Component
-public class JwtAuthenticationFilter extends OncePerRequestFilter {
+public class JwtAuthenticationFilter implements WebFilter {
 
     private final JwtUtil jwtTokenUtil;
 
@@ -21,9 +18,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     }
 
     @Override
-    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
-            throws IOException, jakarta.servlet.ServletException {
-        final String requestTokenHeader = request.getHeader("Authorization");
+    public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
+        final String requestTokenHeader = exchange.getRequest().getHeaders().getFirst("Authorization");
 
         String username = null;
         String jwtToken = null;
@@ -33,23 +29,24 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             try {
                 username = jwtTokenUtil.getUsernameFromToken(jwtToken);
                 if (!jwtTokenUtil.isAccessToken(jwtToken)) {
-                    response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-                    response.getWriter().write("Refresh token cannot be used for authentication");
-                    return;
+                    exchange.getResponse().setStatusCode(org.springframework.http.HttpStatus.UNAUTHORIZED);
+                    return exchange.getResponse().setComplete();
                 }
             } catch (Exception e) {
                 username = null;
             }
         } else {
-            logger.warn("JWT Token does not begin with Bearer String");
+            // Handle case where the token does not start with "Bearer "
+            return chain.filter(exchange);
         }
 
-        if (username != null && SecurityContextHolder.getContext().getAuthentication() == null && jwtTokenUtil.validateToken(jwtToken)) {
-                PreAuthenticatedAuthenticationToken authToken = new PreAuthenticatedAuthenticationToken(username, null, null);
-                authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
-                SecurityContextHolder.getContext().setAuthentication(authToken);
-            }
-        
-        chain.doFilter(request, response);
+        if (username != null && jwtTokenUtil.validateToken(jwtToken)) {
+            // Use UsernamePasswordAuthenticationToken instead
+            UsernamePasswordAuthenticationToken authToken = new UsernamePasswordAuthenticationToken(username, null, null);
+            return chain.filter(exchange)
+                    .contextWrite(ReactiveSecurityContextHolder.withAuthentication(authToken));
+        }
+
+        return chain.filter(exchange);
     }
 }
