@@ -6,6 +6,10 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.server.ServerWebExchange;
+
+import br.lightbase.helios.authentication.service.AuthenticationService;
+import br.lightbase.helios.logs.entities.RequestLog;
+import br.lightbase.helios.logs.services.LogService;
 import reactor.core.publisher.Mono;
 
 @RestController
@@ -15,62 +19,76 @@ public class ProxyController {
     private String apiToken;
 
     private final WebClient webClient;
+    private final LogService logService;
+    private final AuthenticationService authenticationService;
 
-    ProxyController(WebClient webClient) {
+    ProxyController(WebClient webClient, LogService logService, AuthenticationService authenticationService) {
         this.webClient = webClient;
+        this.logService = logService;
+        this.authenticationService = authenticationService;
     }
 
     @PreAuthorize("isAuthenticated()")
     @RequestMapping("/**")
     public Mono<ResponseEntity<String>> proxyRequest(ServerWebExchange exchange, @RequestBody(required = false) Mono<String> body) {
 
-        // Build the request URL by removing the "/proxy/api" context path
+        // Extract request details
         String requestUrl = exchange.getRequest().getURI().getPath().replaceFirst("/proxy/api", "");
-        
-        // Append query parameters if any
         String queryParams = exchange.getRequest().getURI().getQuery();
         if (queryParams != null) {
             requestUrl += "?" + queryParams;
         }
 
-        // Get HTTP method and headers
         HttpMethod method = exchange.getRequest().getMethod();
-        HttpHeaders headers = new HttpHeaders();
-        exchange.getRequest().getHeaders().forEach(headers::put);
-        headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiToken);
+        HttpHeaders headers = exchange.getRequest().getHeaders();
+        String authHeader = headers.getFirst(HttpHeaders.AUTHORIZATION);
+        String username = extractUsernameFromToken(authHeader);
 
-        // Prepare WebClient request spec
-        WebClient.RequestBodySpec requestSpec = webClient.method(method)
-                .uri(requestUrl)
-                .headers(h -> h.addAll(headers));
+        // Determine if request is allowed
+        boolean isAllowed = method == HttpMethod.GET;
+        RequestLog requestLog = new RequestLog();
+        requestLog.setUsername(username);
+        requestLog.setUri(requestUrl);
+        requestLog.setMethod(method.name());
+        requestLog.setPassed(isAllowed);
 
-        Mono<ResponseEntity<String>> responseEntityMono;
-
-        // Check the method type to handle body for POST, PUT, and PATCH requests
-        if (method == HttpMethod.POST || method == HttpMethod.PUT || method == HttpMethod.PATCH) {
-            responseEntityMono = requestSpec.body(body != null ? body : Mono.empty(), String.class)
-                    .retrieve()
-                    .toEntity(String.class);  // This returns Mono<ResponseEntity<String>>
-        } else {
-            responseEntityMono = requestSpec.retrieve().toEntity(String.class);  // Same here
+        if (!isAllowed) {
+            logService.save(requestLog);
+            return Mono.just(ResponseEntity.status(HttpStatus.FORBIDDEN).body("Blocked by proxy"));
         }
 
-        // Return the response as a Mono<ResponseEntity<String>>
-        return responseEntityMono.flatMap(responseEntity -> {
+        // Prepare request for forwarding
+        WebClient.RequestBodySpec requestSpec = webClient.method(method)
+                .uri(requestUrl)
+                .headers(h -> h.addAll(headers))
+                .headers(h -> h.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiToken));
 
-            // Prepare response headers
-            HttpHeaders responseHeaders = new HttpHeaders();
-            responseHeaders.addAll(responseEntity.getHeaders());
+        Mono<String> requestBodyMono = body != null ? body.defaultIfEmpty("") : Mono.just("");
 
-            // Ensure Transfer-Encoding is 'identity' and remove any chunked encoding
-            responseHeaders.set(HttpHeaders.TRANSFER_ENCODING, "identity");
-            responseHeaders.remove(HttpHeaders.TRANSFER_ENCODING); // Ensure chunked encoding is removed
+        return requestBodyMono.flatMap(requestBody -> {
+            requestLog.setBody(requestBody);
 
-            // Build and return a new ResponseEntity
-            return Mono.just(ResponseEntity.status(responseEntity.getStatusCode())
-                    .headers(responseHeaders)
-                    .body(responseEntity.getBody())
-            );
+            return requestSpec.exchangeToMono(response -> {
+                HttpStatusCode status = response.statusCode();
+            
+                return response.bodyToMono(String.class)
+                        .defaultIfEmpty("") // Ensures empty responses don't cause issues
+                        .doOnSuccess(bd -> {
+                            requestLog.setStatus(status.value());
+                            requestLog.setBody(bd); // Log the response body
+                            logService.save(requestLog);
+                        })
+                        .map(bdy -> ResponseEntity.status(status).body(bdy));
+            });
+            
         });
+    }
+
+    private String extractUsernameFromToken(String token) {
+        if (token == null || !token.startsWith("Bearer ")) {
+            return "anonymous";
+        }
+        String extractedToken = token.substring(7);
+        return authenticationService.extractUsername(extractedToken); 
     }
 }
