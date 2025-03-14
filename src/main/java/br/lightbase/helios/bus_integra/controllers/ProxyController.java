@@ -53,6 +53,7 @@ public class ProxyController {
         requestLog.setPassed(isAllowed);
 
         if (!isAllowed) {
+            body.doOnNext(requestBody -> requestLog.setBody(requestBody)).subscribe();
             logService.save(requestLog);
             return Mono.just(ResponseEntity.status(HttpStatus.FORBIDDEN).body("Blocked by proxy"));
         }
@@ -75,7 +76,6 @@ public class ProxyController {
                         .defaultIfEmpty("") // Ensures empty responses don't cause issues
                         .doOnSuccess(bd -> {
                             requestLog.setStatus(status.value());
-                            requestLog.setBody(bd); // Log the response body
                             logService.save(requestLog);
                         })
                         .map(bdy -> ResponseEntity.status(status).body(bdy));
