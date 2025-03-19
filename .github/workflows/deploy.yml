@@ -3,7 +3,7 @@ name: Deploy to AWS EC2 via CodeDeploy
 on:
   push:
     branches:
-      - integra-dev
+      - proxy-dev
 
 jobs:
   deploy:
