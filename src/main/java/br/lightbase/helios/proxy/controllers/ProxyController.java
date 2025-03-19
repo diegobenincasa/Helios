@@ -1,4 +1,4 @@
-package br.lightbase.helios.bus_integra.controllers;
+package br.lightbase.helios.proxy.controllers;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
@@ -53,7 +53,7 @@ public class ProxyController {
         requestLog.setPassed(isAllowed);
 
         if (!isAllowed) {
-            body.doOnNext(requestBody -> requestLog.setBody(requestBody)).subscribe();
+            body.doOnNext(requestLog::setBody).subscribe();
             logService.save(requestLog);
             return Mono.just(ResponseEntity.status(HttpStatus.FORBIDDEN).body("Blocked by proxy"));
         }
