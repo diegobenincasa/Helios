@@ -23,7 +23,7 @@ jobs:
         run: mvn clean package -DskipTests
 
       - name: Zip Artifacts
-        run: zip -r deploy.zip appspec.yml scripts/ target/helios.war
+        run: zip -r deploy.zip appspec.yml scripts/ target/helios-1.0.war
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v1
